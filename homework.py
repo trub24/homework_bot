@@ -7,7 +7,7 @@ import sys
 from http import HTTPStatus
 from dotenv import load_dotenv
 from telebot import TeleBot
-
+from exceptions import RequestError, UnexpectedStatusErorr
 
 load_dotenv()
 
@@ -38,18 +38,13 @@ HOMEWORK_VERDICTS = {
 def check_tokens():
     """Проверка доступности переменных окружения."""
     token_list = [PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID]
-    for token in token_list:
-        if token is None:
-            logging.critical(
-                f'Отсутствует обязательная переменная окружения: {token}.'
-                'Программа принудительно остановлена.')
-            return False
-    return True
+    return all(token_list)
 
 
 def send_message(bot, message):
     """Отправка сообщений в в Telegram-чат."""
     try:
+        logging.info('Начало отправки сообщения')
         bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
             text=message
@@ -68,8 +63,8 @@ def get_api_answer(timestamp):
             params={'from_date': timestamp}
         )
         if homework.status_code != HTTPStatus.OK:
-            logging.error('Эндпоит недоступен')
-            raise RuntimeError
+            logging.error('Сервер неотвечает')
+            raise RequestError('Сервер неотвечает')
         else:
             return homework.json()
     except requests.exceptions.RequestException as error:
@@ -98,10 +93,10 @@ def parse_status(homework: dict):
     status = homework.get('status')
     if not homework_name:
         logging.error('Отсутствуют необходимые ключи в переданном словаре')
-        raise KeyError
+        raise KeyError('Отсутствуют необходимые ключи в переданном словаре')
     elif status not in HOMEWORK_VERDICTS:
         logging.error('неожиданный статус домашней работы')
-        raise KeyError
+        raise UnexpectedStatusErorr('неожиданный статус домашней работы')
     verdict = HOMEWORK_VERDICTS.get(status)
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
@@ -112,7 +107,11 @@ def main():
     bot = TeleBot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
     if not check_tokens():
+        logging.critical(
+            'Отсутствует обязательная переменная окружения.'
+        )
         sys.exit(1)
+    message_list = []
 
     while True:
         try:
@@ -120,7 +119,12 @@ def main():
             hw_list = check_response(hw)
             if hw_list:
                 message = parse_status(hw_list[0])
-                send_message(bot, message)
+                if message not in message_list:
+                    message_list.clear()
+                    message_list.append(message)
+                    send_message(bot, message)
+                else:
+                    logging.debug('отсутствие в ответе новых статусов')
             else:
                 logging.debug('отсутствие в ответе новых статусов')
             timestamp = int(hw.get('current_date') - RETRY_PERIOD)
